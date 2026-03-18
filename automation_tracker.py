@@ -53,14 +53,34 @@ def get_issue_keys(headers, jql, start_date, end_date):
     
     while True:
         params = {"jql": full_jql, "startAt": start_at, "maxResults": max_results, "fields": "key"}
-        r = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
         
-        if r.status_code == 401:
-            st.error("HATA (401): Yetkilendirme reddedildi. Lütfen Streamlit Secrets içindeki JIRA_TOKEN değerini kontrol edin.")
+        try:
+            r = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
+        except requests.exceptions.RequestException as e:
+            st.error(f"🚨 **Bağlantı Hatası:** Jira sunucusuna ulaşılamıyor. Şirket ağında (VPN) olduğunuzdan emin olun.\n\n`{e}`")
             st.stop()
             
-        r.raise_for_status()
-        data = r.json()
+        # 200 (Başarılı) dışındaki kodları yakala
+        if r.status_code != 200:
+            st.error(f"🚨 **Jira API Hatası (Kod: {r.status_code})**")
+            if r.status_code == 401:
+                st.warning("Yetkilendirme reddedildi. JIRA_TOKEN değerinizi kontrol edin.")
+            elif r.status_code in [403, 503]:
+                st.warning("Erişim engellendi. Streamlit Cloud sunucuları şirketinizin güvenlik duvarına (Firewall/VPN) takılıyor olabilir.")
+            
+            with st.expander("Jira'dan Dönen Hata Mesajı Detayı"):
+                st.code(r.text[:1000], language="html")
+            st.stop()
+            
+        # JSON dönüştürme hatasını yakala
+        try:
+            data = r.json()
+        except Exception:
+            st.error("🚨 **Veri Okuma Hatası:** Jira'dan beklenen veri gelmedi. Sunucu JSON yerine bir HTML sayfası döndürdü (Muhtemelen bir Firewall engeli sayfası).")
+            with st.expander("Gelen Yanıt (İlk 1000 Karakter)"):
+                st.code(r.text[:1000], language="html")
+            st.stop()
+
         issues = data.get("issues", [])
         if not issues:
             break
