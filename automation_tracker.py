@@ -11,8 +11,29 @@ import datetime
 # SSL Uyarılarını gizle
 urllib3.disable_warnings(InsecureRequestWarning)
 
+# =============================================================================
+# PROJE TANIMLAMALARI (Sabit Sözlük)
+# =============================================================================
+PROJECTS = {
+    "BiP": "QA471990, QABIPBEL, QABR, QA252282, QA471299",
+    "fizy": "QF284050, QB284050, QM284050",
+    "Game+": "QA-GAME-WEB, QA-GAME-BACKEND",
+    "lifebox": "QW259876, QB259876, QM259876",
+    "Sardis": "QASARDIS",
+    "TV+": "QATR, QATRT, QATMA, QAMRB, QBTBB",
+    "Upcall": "QACALL"
+}
+
+# Tümü seçeneği için bütün projeleri birleştir
+ALL_PROJECTS_STRING = ", ".join(PROJECTS.values())
+PROJECTS["Tümü (Bütün Ürünler)"] = ALL_PROJECTS_STRING
+
 # Sayfa Ayarları
 st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="wide")
+
+# =============================================================================
+# FONKSİYONLAR
+# =============================================================================
 
 def get_auth_headers(token):
     return {
@@ -81,28 +102,43 @@ def generate_excel(df_summary, df_details):
 # STREAMLIT ARAYÜZ (UI)
 # =============================================================================
 
-st.title("🚀 Jira Otomasyon Performans Dashboard")
-st.markdown("Takımınızın otomasyona geçirdiği senaryoları kişi bazlı olarak takip edin.")
+st.title("🚀 QA Otomasyon Performans Dashboard")
+st.markdown("Ürün ve tarih aralığı seçerek takımınızın otomasyon katkılarını interaktif olarak analiz edin.")
 
+# Sol Menü (Sidebar) Ayarları
 with st.sidebar:
-    st.header("⚙️ Ayarlar")
+    st.header("⚙️ Rapor Kriterleri")
     
-    jira_url = st.text_input("Jira URL", value="https://jira.turkcell.com.tr")
-    jira_token = st.text_input("Jira Token (PAT)", type="password", help="Jira profilinizden aldığınız Bearer Token")
+    jira_token = st.text_input("Jira Token (PAT) 🔒", type="password", help="Güvenliğiniz için token kaydedilmez, sadece anlık kullanılır.")
     
     st.markdown("---")
-    project_jql = st.text_area("JQL Sorgusu", value="project in (QF284050, QM284050, QB284050)")
     
+    # Proje Seçimi (Dropdown)
+    selected_product = st.selectbox(
+        "📦 Ürün Seçin",
+        options=list(PROJECTS.keys()),
+        index=1  # Varsayılan olarak listesindeki 2. elemanı (fizy) seçer
+    )
+    
+    # Tarih Seçiciler
+    st.markdown("📅 **Tarih Aralığı**")
     col1, col2 = st.columns(2)
     with col1:
-        start_d = st.date_input("Başlangıç", datetime.date(2025, 1, 1))
+        # Varsayılan olarak bu yılın başını alır
+        start_d = st.date_input("Başlangıç", datetime.date(datetime.date.today().year, 1, 1))
     with col2:
         end_d = st.date_input("Bitiş", datetime.date.today())
         
-    custom_field = st.text_input("Otomasyon Alanı Adı", value="Automated")
-    target_vals_str = st.text_area("Hedef Değerler (Virgülle ayırın)", value="Android-Automated, IOS-Automated, Half, Yes")
+    st.markdown("---")
     
-    run_btn = st.button("📊 Raporu Oluştur", type="primary", use_container_width=True)
+    # Gelişmiş Ayarlar (Gizli/Açılır Menü)
+    with st.expander("🛠️ Gelişmiş Ayarlar (İsteğe Bağlı)"):
+        jira_url = st.text_input("Jira URL", value="https://jira.turkcell.com.tr")
+        custom_field = st.text_input("Otomasyon Alanı Adı", value="Automated")
+        target_vals_str = st.text_area("Hedef Değerler", value="Android-Automated, IOS-Automated, Half, Yes")
+    
+    st.markdown("<br>", unsafe_allow_html=True) # Boşluk
+    run_btn = st.button("📊 Dashboard'u Oluştur", type="primary", use_container_width=True)
 
 # =============================================================================
 # ANA ÇALIŞMA MANTIĞI
@@ -110,21 +146,29 @@ with st.sidebar:
 
 if run_btn:
     if not jira_token:
-        st.warning("⚠️ Lütfen devam etmeden önce Jira Token'ınızı girin.")
+        st.warning("⚠️ Lütfen devam etmeden önce sol menüden Jira Token'ınızı girin.")
         st.stop()
 
     start_date_str = start_d.strftime("%Y-%m-%d")
     end_date_str = end_d.strftime("%Y-%m-%d")
     target_values = [x.strip() for x in target_vals_str.split(",")]
     headers = get_auth_headers(jira_token)
+    
+    # Dinamik JQL Oluşturma
+    selected_project_keys = PROJECTS[selected_product]
+    project_jql = f"project in ({selected_project_keys})"
 
-    with st.spinner("Jira'da senaryolar aranıyor..."):
+    st.info(f"🔍 **{selected_product}** ürünü için `{start_date_str}` ile `{end_date_str}` tarihleri arası taranıyor...")
+
+    # 1. Aşama: Jira'dan kayıtları bul
+    with st.spinner("İlgili senaryolar Jira'dan çekiliyor..."):
         issue_keys = get_issue_keys(jira_url, headers, project_jql, start_date_str, end_date_str)
     
     if not issue_keys:
-        st.info("İlgili tarih aralığında güncellenmiş Test senaryosu bulunamadı.")
+        st.warning(f"Seçilen kriterlerde ({selected_product}) güncellenmiş Test senaryosu bulunamadı.")
         st.stop()
 
+    # 2. Aşama: Geçmişleri (Changelog) tara
     author_stats = defaultdict(int)
     detailed_records = []
     total_issues = len(issue_keys)
@@ -142,7 +186,7 @@ if run_btn:
         for future in concurrent.futures.as_completed(future_to_key):
             completed += 1
             progress_bar.progress(completed / total_issues)
-            status_text.text(f"Geçmiş taranıyor: %{int((completed/total_issues)*100)} ({completed}/{total_issues})")
+            status_text.text(f"Geçmiş kayıtları taranıyor: %{int((completed/total_issues)*100)} ({completed}/{total_issues})")
             
             result = future.result()
             if result:
@@ -152,41 +196,54 @@ if run_btn:
     progress_bar.empty()
     status_text.empty()
 
+    # 3. Aşama: Sonuçları Göster
     if not author_stats:
-        st.warning("Taranan senaryolarda ilgili alanı değiştiren kimse bulunamadı.")
+        st.warning("Taranan senaryolarda 'Automated' alanını hedef değerlere çeken kimse bulunamadı.")
         st.stop()
 
     sorted_authors = sorted(author_stats.items(), key=lambda x: x[1], reverse=True)
     df_summary = pd.DataFrame(sorted_authors, columns=["Kişi", "Otomatize Edilen Senaryo Sayısı"])
     df_details = pd.DataFrame(detailed_records)
     df_details.columns = ["Senaryo ID", "Kişi", "Otomasyon Statüsü", "Tarih"]
+    
     total_automated = sum(count for _, count in sorted_authors)
 
-    st.success("Analiz tamamlandı!")
+    st.success("Analiz başarıyla tamamlandı! 🎉")
 
-    m1, m2 = st.columns(2)
-    m1.metric("Toplam Otomatize Edilen Senaryo", total_automated)
-    m2.metric("Otomasyon Yazan Kişi Sayısı", len(sorted_authors))
+    # Metrik Kartları
+    m1, m2, m3 = st.columns(3)
+    m1.metric("📦 Seçilen Ürün", selected_product)
+    m2.metric("✅ Otomatize Edilen Senaryo", total_automated)
+    m3.metric("👥 Otomasyon Yazan Kişi", len(sorted_authors))
 
     st.markdown("---")
 
+    # Grafik ve Tablo Yan Yana
     col_chart, col_table = st.columns([2, 1])
+    
     with col_chart:
-        st.subheader("📊 Kişi Bazlı Dağılım")
-        st.bar_chart(df_summary.set_index("Kişi"), color="#0d6efd")
+        st.subheader("📊 Kişi Bazlı Dağılım Grafiği")
+        # Bar chart rengi modern bir mavi
+        st.bar_chart(df_summary.set_index("Kişi"), color="#0dcaf0")
+        
     with col_table:
         st.subheader("🏆 Liderlik Tablosu")
         st.dataframe(df_summary, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    st.subheader("📝 Senaryo Detayları")
+    
+    # Detaylar ve Excel İndirme
+    st.subheader("📝 İşlem Detayları (Kanıt Kayıtları)")
     st.dataframe(df_details, use_container_width=True, hide_index=True)
     
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Excel dosyasını RAM'de (hafızada) oluşturup indirme butonu sunuyoruz
     excel_data = generate_excel(df_summary, df_details)
     st.download_button(
-        label="📥 Sonuçları Excel Olarak İndir",
+        label="📥 Tüm Sonuçları Excel Olarak İndir",
         data=excel_data,
-        file_name=f"Otomasyon_Raporu_{start_date_str}.xlsx",
+        file_name=f"{selected_product}_Otomasyon_Raporu_{start_date_str}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary"
     )
