@@ -36,12 +36,13 @@ PROJECTS["Tümü (Bütün Ürünler)"] = ", ".join(PROJECTS.values())
 # FONKSİYONLAR
 # =============================================================================
 def get_auth_headers(token, cookie_string):
-    """Jira'ya gönderilecek kimlik ve çerez başlıkları"""
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Cookie": cookie_string
+        "Cookie": cookie_string,
+        # Bu satır, Python'u gerçek bir tarayıcı gibi gösterir:
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
 def get_issue_keys(headers, jql, start_date, end_date):
