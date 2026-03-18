@@ -12,8 +12,12 @@ import datetime
 urllib3.disable_warnings(InsecureRequestWarning)
 
 # =============================================================================
-# PROJE TANIMLAMALARI (Sabit Sözlük)
+# SABİT AYARLAR (Arka Planda Çalışan Kurallar)
 # =============================================================================
+JIRA_URL = "https://jira.turkcell.com.tr"
+CUSTOM_FIELD = "Automated"
+TARGET_VALUES = ["Android-Automated", "IOS-Automated", "Half", "Yes"]
+
 PROJECTS = {
     "BiP": "QA471990, QABIPBEL, QABR, QA252282, QA471299",
     "fizy": "QF284050, QB284050, QM284050",
@@ -25,8 +29,7 @@ PROJECTS = {
 }
 
 # Tümü seçeneği için bütün projeleri birleştir
-ALL_PROJECTS_STRING = ", ".join(PROJECTS.values())
-PROJECTS["Tümü (Bütün Ürünler)"] = ALL_PROJECTS_STRING
+PROJECTS["Tümü (Bütün Ürünler)"] = ", ".join(PROJECTS.values())
 
 # Sayfa Ayarları
 st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="wide")
@@ -34,16 +37,15 @@ st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="w
 # =============================================================================
 # FONKSİYONLAR
 # =============================================================================
-
 def get_auth_headers(token):
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
 
-def get_issue_keys(jira_url, headers, jql, start_date, end_date):
+def get_issue_keys(headers, jql, start_date, end_date):
     full_jql = f"({jql}) AND issuetype = Test AND updated >= '{start_date}' AND updated <= '{end_date} 23:59'"
-    url = f"{jira_url.rstrip('/')}/rest/api/2/search"
+    url = f"{JIRA_URL.rstrip('/')}/rest/api/2/search"
     
     start_at = 0
     max_results = 100
@@ -54,7 +56,7 @@ def get_issue_keys(jira_url, headers, jql, start_date, end_date):
         r = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
         
         if r.status_code == 401:
-            st.error("HATA (401): Yetkilendirme reddedildi. Lütfen Token'ınızı kontrol edin.")
+            st.error("HATA (401): Yetkilendirme reddedildi. Lütfen Streamlit Secrets içindeki JIRA_TOKEN değerini kontrol edin.")
             st.stop()
             
         r.raise_for_status()
@@ -71,8 +73,8 @@ def get_issue_keys(jira_url, headers, jql, start_date, end_date):
         
     return issue_keys
 
-def check_who_automated(key, jira_url, headers, start_date, end_date, custom_field_name, target_values):
-    url = f"{jira_url.rstrip('/')}/rest/api/2/issue/{key}?expand=changelog"
+def check_who_automated(key, headers, start_date, end_date):
+    url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue/{key}?expand=changelog"
     try:
         r = requests.get(url, headers=headers, verify=False, timeout=30)
         if r.status_code == 200:
@@ -82,9 +84,9 @@ def check_who_automated(key, jira_url, headers, start_date, end_date, custom_fie
                 if start_date <= hist_date <= end_date:
                     for item in history.get("items", []):
                         field_name = str(item.get("field", "")).lower()
-                        if field_name == custom_field_name.lower():
+                        if field_name == CUSTOM_FIELD.lower():
                             to_val = str(item.get("toString", "")).strip()
-                            if to_val in target_values:
+                            if to_val in TARGET_VALUES:
                                 author = history.get("author", {}).get("displayName", "Bilinmeyen Kullanıcı")
                                 return {"key": key, "author": author, "status": to_val, "date": hist_date}
     except Exception:
@@ -109,35 +111,21 @@ st.markdown("Ürün ve tarih aralığı seçerek takımınızın otomasyon katk�
 with st.sidebar:
     st.header("⚙️ Rapor Kriterleri")
     
-    jira_token = st.text_input("Jira Token (PAT) 🔒", type="password", help="Güvenliğiniz için token kaydedilmez, sadece anlık kullanılır.")
-    
-    st.markdown("---")
-    
-    # Proje Seçimi (Dropdown)
+    # Proje Seçimi
     selected_product = st.selectbox(
         "📦 Ürün Seçin",
         options=list(PROJECTS.keys()),
-        index=1  # Varsayılan olarak listesindeki 2. elemanı (fizy) seçer
+        index=1  # Varsayılan olarak fizy
     )
     
-    # Tarih Seçiciler
     st.markdown("📅 **Tarih Aralığı**")
     col1, col2 = st.columns(2)
     with col1:
-        # Varsayılan olarak bu yılın başını alır
         start_d = st.date_input("Başlangıç", datetime.date(datetime.date.today().year, 1, 1))
     with col2:
         end_d = st.date_input("Bitiş", datetime.date.today())
         
-    st.markdown("---")
-    
-    # Gelişmiş Ayarlar (Gizli/Açılır Menü)
-    with st.expander("🛠️ Gelişmiş Ayarlar (İsteğe Bağlı)"):
-        jira_url = st.text_input("Jira URL", value="https://jira.turkcell.com.tr")
-        custom_field = st.text_input("Otomasyon Alanı Adı", value="Automated")
-        target_vals_str = st.text_area("Hedef Değerler", value="Android-Automated, IOS-Automated, Half, Yes")
-    
-    st.markdown("<br>", unsafe_allow_html=True) # Boşluk
+    st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("📊 Dashboard'u Oluştur", type="primary", use_container_width=True)
 
 # =============================================================================
@@ -145,16 +133,17 @@ with st.sidebar:
 # =============================================================================
 
 if run_btn:
-    if not jira_token:
-        st.warning("⚠️ Lütfen devam etmeden önce sol menüden Jira Token'ınızı girin.")
+    # Şifreyi Streamlit'in gizli kasasından çekiyoruz
+    try:
+        jira_token = st.secrets["JIRA_TOKEN"]
+    except KeyError:
+        st.error("⚠️ HATA: Jira Token bulunamadı! Lütfen Streamlit Cloud ayarlarından (Secrets) 'JIRA_TOKEN' değerini ekleyin.")
         st.stop()
 
     start_date_str = start_d.strftime("%Y-%m-%d")
     end_date_str = end_d.strftime("%Y-%m-%d")
-    target_values = [x.strip() for x in target_vals_str.split(",")]
     headers = get_auth_headers(jira_token)
     
-    # Dinamik JQL Oluşturma
     selected_project_keys = PROJECTS[selected_product]
     project_jql = f"project in ({selected_project_keys})"
 
@@ -162,7 +151,7 @@ if run_btn:
 
     # 1. Aşama: Jira'dan kayıtları bul
     with st.spinner("İlgili senaryolar Jira'dan çekiliyor..."):
-        issue_keys = get_issue_keys(jira_url, headers, project_jql, start_date_str, end_date_str)
+        issue_keys = get_issue_keys(headers, project_jql, start_date_str, end_date_str)
     
     if not issue_keys:
         st.warning(f"Seçilen kriterlerde ({selected_product}) güncellenmiş Test senaryosu bulunamadı.")
@@ -179,7 +168,7 @@ if run_btn:
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_key = {
-            executor.submit(check_who_automated, key, jira_url, headers, start_date_str, end_date_str, custom_field, target_values): key 
+            executor.submit(check_who_automated, key, headers, start_date_str, end_date_str): key 
             for key in issue_keys
         }
         
@@ -223,7 +212,6 @@ if run_btn:
     
     with col_chart:
         st.subheader("📊 Kişi Bazlı Dağılım Grafiği")
-        # Bar chart rengi modern bir mavi
         st.bar_chart(df_summary.set_index("Kişi"), color="#0dcaf0")
         
     with col_table:
@@ -238,7 +226,6 @@ if run_btn:
     
     st.markdown("<br>", unsafe_allow_html=True)
     
-    # Excel dosyasını RAM'de (hafızada) oluşturup indirme butonu sunuyoruz
     excel_data = generate_excel(df_summary, df_details)
     st.download_button(
         label="📥 Tüm Sonuçları Excel Olarak İndir",
