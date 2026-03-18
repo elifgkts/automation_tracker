@@ -11,7 +11,7 @@ import datetime
 # SSL Uyarılarını gizle
 urllib3.disable_warnings(InsecureRequestWarning)
 
-# Sayfa Ayarları (İlk Streamlit komutu olmalı)
+# Sayfa Ayarları
 st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="wide")
 
 # =============================================================================
@@ -32,202 +32,144 @@ PROJECTS = {
 }
 PROJECTS["Tümü (Bütün Ürünler)"] = ", ".join(PROJECTS.values())
 
-
 # =============================================================================
 # FONKSİYONLAR
 # =============================================================================
 def get_auth_headers(token, cookie_string):
-    """Jira'ya gönderilecek kimlik ve çerez (Cookie) başlıkları"""
+    """Jira'ya gönderilecek kimlik ve çerez başlıkları"""
     return {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "Cookie": cookie_string  # F5/SSO'yu aşmamızı sağlayan altın anahtar!
+        "Cookie": cookie_string
     }
 
 def get_issue_keys(headers, jql, start_date, end_date):
     full_jql = f"({jql}) AND issuetype = Test AND updated >= '{start_date}' AND updated <= '{end_date} 23:59'"
     url = f"{JIRA_URL.rstrip('/')}/rest/api/2/search"
-    
-    start_at = 0
-    max_results = 100
-    issue_keys = []
+    start_at, max_results, issue_keys = 0, 100, []
     
     while True:
         params = {"jql": full_jql, "startAt": start_at, "maxResults": max_results, "fields": "key"}
         try:
             r = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
-            
             if r.status_code == 401:
-                st.error("🚨 HATA (401): Yetkilendirme reddedildi. Lütfen Jira Token'ınızı doğru girdiğinizden emin olun.")
+                st.error("🚨 Yetkilendirme Hatası: Streamlit Secrets içindeki JIRA_TOKEN geçersiz.")
                 st.stop()
-                
             r.raise_for_status()
-            
-            # JSON formatında veri gelip gelmediğini kontrol et
-            try:
-                data = r.json()
-            except Exception:
-                st.error("🚨 HATA: Jira'dan JSON verisi yerine HTML/Boş sayfa döndü. Girdiğiniz Cookie'nin eksiksiz olduğundan veya süresinin dolmadığından emin olun.")
-                with st.expander("Jira'nın Bize Döndüğü Yanıtı Gör"):
-                    st.code(r.text[:2000], language="html")
-                st.stop()
-                
-        except Exception as e:
-            if not str(e).startswith("🚨"):
-                st.error(f"🚨 HATA: Jira'ya bağlanılamadı.\nDetay: {e}")
+            data = r.json()
+        except Exception:
+            st.error("🚨 Güvenlik Engeli: Girdiğiniz Cookie hatalı veya süresi dolmuş olabilir.")
             st.stop()
             
         issues = data.get("issues", [])
         if not issues: break
-        issue_keys.extend([issue["key"] for issue in issues])
+        issue_keys.extend([i["key"] for i in issues])
         if len(issues) < max_results: break
         start_at += max_results
-        
     return issue_keys
 
 def check_who_automated(key, headers, start_date, end_date):
     url = f"{JIRA_URL.rstrip('/')}/rest/api/2/issue/{key}?expand=changelog"
     try:
-        r = requests.get(url, headers=headers, verify=False, timeout=30)
+        r = requests.get(url, headers=headers, verify=False, timeout=20)
         if r.status_code == 200:
-            try:
-                data = r.json()
-            except:
-                return None
-                
-            changelog = data.get("changelog", {}).get("histories", [])
-            for history in changelog:
-                hist_date = history.get("created", "")[:10]
-                if start_date <= hist_date <= end_date:
-                    for item in history.get("items", []):
-                        field_name = str(item.get("field", "")).lower()
-                        if field_name == CUSTOM_FIELD.lower():
-                            to_val = str(item.get("toString", "")).strip()
-                            if to_val in TARGET_VALUES:
-                                author = history.get("author", {}).get("displayName", "Bilinmeyen Kullanıcı")
-                                return {"key": key, "author": author, "status": to_val, "date": hist_date}
-    except Exception:
-        pass
+            histories = r.json().get("changelog", {}).get("histories", [])
+            for h in histories:
+                created_date = h.get("created", "")[:10]
+                if start_date <= created_date <= end_date:
+                    for item in h.get("items", []):
+                        if str(item.get("field", "")).lower() == CUSTOM_FIELD.lower():
+                            if str(item.get("toString", "")).strip() in TARGET_VALUES:
+                                return {
+                                    "key": key, 
+                                    "author": h.get("author", {}).get("displayName", "Bilinmiyor"), 
+                                    "status": item.get("toString"), 
+                                    "date": created_date
+                                }
+    except: pass
     return None
 
-def generate_excel(df_summary, df_details):
+def generate_excel(df_s, df_d):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_summary.to_excel(writer, sheet_name="Özet Puan Durumu", index=False)
-        df_details.to_excel(writer, sheet_name="Senaryo Detayları", index=False)
+        df_s.to_excel(writer, sheet_name="Özet", index=False)
+        df_d.to_excel(writer, sheet_name="Detay", index=False)
     return output.getvalue()
-
 
 # =============================================================================
 # ARAYÜZ (UI)
 # =============================================================================
 st.title("🚀 QA Otomasyon Performans Dashboard")
-st.markdown("Ürün ve tarih aralığı seçerek takımınızın otomasyon katkılarını interaktif olarak analiz edin.")
 
 with st.sidebar:
-    st.header("⚙️ Rapor Kriterleri")
+    st.header("⚙️ Ayarlar")
     
-    jira_token = st.text_input("Jira Token (PAT) 🔒", type="password", help="Jira profilinizden aldığınız Bearer Token")
-    jira_cookie = st.text_input("F5 / Jira Cookie 🍪", type="password", help="Tarayıcı ağ trafiğinden kopyaladığınız uzun 'cookie:' değeri")
-    
-    st.markdown("---")
+    # Arayüzde sadece Cookie alanı kaldı
+    user_cookie = st.text_input("Jira Cookie (Bileti Yapıştır) 🎫", type="password", help="Chrome -> F12 -> Network -> Request Headers -> Cookie kısmındaki metin")
     
     selected_product = st.selectbox("📦 Ürün Seçin", options=list(PROJECTS.keys()), index=1)
     
     st.markdown("📅 **Tarih Aralığı**")
     col1, col2 = st.columns(2)
-    with col1: start_d = st.date_input("Başlangıç", datetime.date(datetime.date.today().year, 1, 1))
+    with col1: start_d = st.date_input("Başlangıç", datetime.date(2026, 1, 1))
     with col2: end_d = st.date_input("Bitiş", datetime.date.today())
         
-    st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("📊 Dashboard'u Oluştur", type="primary", use_container_width=True)
 
 # =============================================================================
-# ANA MANTIK
+# ÇALIŞTIRMA
 # =============================================================================
 if run_btn:
-    if not jira_token or not jira_cookie:
-        st.warning("⚠️ Lütfen sol menüden Jira Token ve Cookie değerlerinin İKİSİNİ DE girin.")
+    if not user_cookie:
+        st.warning("⚠️ Devam etmek için lütfen Jira Cookie değerini yapıştırın.")
         st.stop()
 
-    start_date_str = start_d.strftime("%Y-%m-%d")
-    end_date_str = end_d.strftime("%Y-%m-%d")
-    
-    # Headers oluşturulurken Token ve Cookie'yi yolluyoruz
-    headers = get_auth_headers(jira_token, jira_cookie)
-    
-    selected_project_keys = PROJECTS[selected_product]
-    project_jql = f"project in ({selected_project_keys})"
+    # PAT bilgisini Secrets'tan çekiyoruz
+    try:
+        jira_pat = st.secrets["JIRA_TOKEN"]
+    except KeyError:
+        st.error("⚠️ HATA: Streamlit Secrets içinde 'JIRA_TOKEN' bulunamadı.")
+        st.stop()
 
-    st.info(f"🔍 **{selected_product}** ürünü için `{start_date_str}` ile `{end_date_str}` arası taranıyor...")
+    headers = get_auth_headers(jira_pat, user_cookie)
+    start_date_str, end_date_str = start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d")
+    project_jql = f"project in ({PROJECTS[selected_product]})"
 
-    with st.spinner("Jira'dan veriler çekiliyor..."):
+    with st.spinner("Jira taranıyor..."):
         issue_keys = get_issue_keys(headers, project_jql, start_date_str, end_date_str)
     
     if not issue_keys:
-        st.warning("Seçilen kriterlerde güncellenmiş senaryo bulunamadı.")
+        st.warning("Senaryo bulunamadı.")
         st.stop()
 
-    author_stats = defaultdict(int)
-    detailed_records = []
-    total_issues = len(issue_keys)
-    
+    author_stats, detailed_records = defaultdict(int), []
     progress_bar = st.progress(0)
-    status_text = st.empty()
-    completed = 0
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        future_to_key = {executor.submit(check_who_automated, key, headers, start_date_str, end_date_str): key for key in issue_keys}
-        
-        for future in concurrent.futures.as_completed(future_to_key):
-            completed += 1
-            progress_bar.progress(completed / total_issues)
-            status_text.text(f"Geçmiş taranıyor: %{int((completed/total_issues)*100)} ({completed}/{total_issues})")
-            
-            result = future.result()
-            if result:
-                author_stats[result["author"]] += 1
-                detailed_records.append(result)
-                
-    progress_bar.empty()
-    status_text.empty()
-
-    if not author_stats:
-        st.warning("Taranan senaryolarda 'Automated' alanını hedef değerlere çeken kimse bulunamadı.")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=15) as executor:
+        futures = {executor.submit(check_who_automated, k, headers, start_date_str, end_date_str): k for k in issue_keys}
+        for i, f in enumerate(concurrent.futures.as_completed(futures)):
+            progress_bar.progress((i + 1) / len(issue_keys))
+            res = f.result()
+            if res:
+                author_stats[res["author"]] += 1
+                detailed_records.append(res)
+    
+    if not detailed_records:
+        st.error("Seçilen tarihlerde otomasyona çekilen iş bulunamadı.")
         st.stop()
 
-    sorted_authors = sorted(author_stats.items(), key=lambda x: x[1], reverse=True)
-    df_summary = pd.DataFrame(sorted_authors, columns=["Kişi", "Otomatize Edilen Senaryo Sayısı"])
+    df_summary = pd.DataFrame(sorted(author_stats.items(), key=lambda x: x[1], reverse=True), columns=["Kişi", "Sayı"])
     df_details = pd.DataFrame(detailed_records)
-    df_details.columns = ["Senaryo ID", "Kişi", "Otomasyon Statüsü", "Tarih"]
-    total_automated = sum(count for _, count in sorted_authors)
 
-    st.success("Analiz başarıyla tamamlandı! 🎉")
+    st.success("Analiz Tamamlandı!")
+    
+    c1, c2 = st.columns(2)
+    c1.metric("Toplam Otomatize", sum(author_stats.values()))
+    c2.metric("Yazan Kişi Sayısı", len(author_stats))
 
-    m1, m2, m3 = st.columns(3)
-    m1.metric("📦 Ürün", selected_product)
-    m2.metric("✅ Otomatize Senaryo", total_automated)
-    m3.metric("👥 Destek Veren Kişi", len(sorted_authors))
-
-    st.markdown("---")
-    col_chart, col_table = st.columns([2, 1])
-    with col_chart:
-        st.subheader("📊 Kişi Bazlı Dağılım Grafiği")
-        st.bar_chart(df_summary.set_index("Kişi"), color="#0dcaf0")
-    with col_table:
-        st.subheader("🏆 Liderlik Tablosu")
-        st.dataframe(df_summary, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.subheader("📝 İşlem Detayları (Kanıt Kayıtları)")
+    st.bar_chart(df_summary.set_index("Kişi"))
+    st.subheader("📝 Detaylı Kayıtlar")
     st.dataframe(df_details, use_container_width=True, hide_index=True)
     
-    excel_data = generate_excel(df_summary, df_details)
-    st.download_button(
-        label="📥 Tüm Sonuçları Excel Olarak İndir",
-        data=excel_data,
-        file_name=f"{selected_product}_Otomasyon_{start_date_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        type="primary"
-    )
+    st.download_button("📥 Excel Olarak İndir", generate_excel(df_summary, df_details), f"{selected_product}_Rapor.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
