@@ -27,11 +27,13 @@ PROJECTS = {
 PROJECTS["Tümü (Bütün Ürünler)"] = ", ".join(PROJECTS.values())
 
 def get_auth_headers(token, cookie_string):
+    """
+    Sadece Cookie kullanarak bağlanıyoruz. 
+    PAT (token) bazen F5 engeline takıldığı için devre dışı bıraktık.
+    """
     return {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
         "Cookie": cookie_string,
+        "Accept": "application/json",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
     }
 
