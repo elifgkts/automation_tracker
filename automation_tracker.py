@@ -8,8 +8,11 @@ import pandas as pd
 import io
 import datetime
 
-# SSL Uyarılarını gizle
+# SSL Uyarılarını (Sertifika hatalarını) gizle
 urllib3.disable_warnings(InsecureRequestWarning)
+
+# Sayfa Ayarları (Streamlit'te ilk çağrılan komut olmalı)
+st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="wide")
 
 # =============================================================================
 # SABİT AYARLAR
@@ -29,15 +32,14 @@ PROJECTS = {
 }
 PROJECTS["Tümü (Bütün Ürünler)"] = ", ".join(PROJECTS.values())
 
-st.set_page_config(page_title="Otomasyon Dashboard", page_icon="🚀", layout="wide")
-
 # =============================================================================
 # FONKSİYONLAR
 # =============================================================================
 def get_auth_headers(token):
     return {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Accept": "application/json"  # JIRA'yı HTML yerine veri (JSON) dönmeye zorluyoruz!
     }
 
 def get_issue_keys(headers, jql, start_date, end_date):
@@ -52,13 +54,30 @@ def get_issue_keys(headers, jql, start_date, end_date):
         params = {"jql": full_jql, "startAt": start_at, "maxResults": max_results, "fields": "key"}
         try:
             r = requests.get(url, headers=headers, params=params, verify=False, timeout=30)
+            
             if r.status_code == 401:
                 st.error("🚨 HATA (401): Yetkilendirme reddedildi. Lütfen Jira Token'ınızı doğru girdiğinizden emin olun.")
                 st.stop()
+                
             r.raise_for_status()
-            data = r.json()
+            
+            # --- GELİŞMİŞ HATA YAKALAMA BÖLÜMÜ ---
+            try:
+                data = r.json()
+            except Exception as json_err:
+                st.error("🚨 HATA: Jira'dan beklenen veri gelmedi. Araya şirket içi bir güvenlik duvarı (SSO/F5) girmiş olabilir.")
+                with st.expander("Jira'nın Bize Döndüğü Gerçek Yanıtı Görmek İçin Tıklayın"):
+                    if not r.text.strip():
+                        st.code("SUNUCU TAMAMEN BOŞ BİR YANIT DÖNDÜ (Empty Response - VPN / Proxy engeli olabilir)", language="text")
+                    else:
+                        st.code(r.text[:2000], language="html")
+                st.stop()
+            # ---------------------------------
+                
         except Exception as e:
-            st.error(f"🚨 HATA: Jira'ya bağlanılamadı. Lütfen Şirket VPN'ine bağlı olduğunuzdan emin olun.\nDetay: {e}")
+            # Eğer kendi fırlattığımız bir hata değilse genel bağlantı hatasını bas
+            if not str(e).startswith("🚨"):
+                st.error(f"🚨 HATA: Jira'ya bağlanılamadı.\nDetay: {e}")
             st.stop()
             
         issues = data.get("issues", [])
@@ -74,7 +93,12 @@ def check_who_automated(key, headers, start_date, end_date):
     try:
         r = requests.get(url, headers=headers, verify=False, timeout=30)
         if r.status_code == 200:
-            changelog = r.json().get("changelog", {}).get("histories", [])
+            try:
+                data = r.json()
+            except:
+                return None
+                
+            changelog = data.get("changelog", {}).get("histories", [])
             for history in changelog:
                 hist_date = history.get("created", "")[:10]
                 if start_date <= hist_date <= end_date:
@@ -112,8 +136,8 @@ with st.sidebar:
     
     st.markdown("📅 **Tarih Aralığı**")
     col1, col2 = st.columns(2)
-    with col1: start_d = st.date_input("Baş", datetime.date(datetime.date.today().year, 1, 1))
-    with col2: end_d = st.date_input("Bit", datetime.date.today())
+    with col1: start_d = st.date_input("Başlangıç", datetime.date(datetime.date.today().year, 1, 1))
+    with col2: end_d = st.date_input("Bitiş", datetime.date.today())
         
     st.markdown("<br>", unsafe_allow_html=True)
     run_btn = st.button("📊 Dashboard'u Oluştur", type="primary", use_container_width=True)
